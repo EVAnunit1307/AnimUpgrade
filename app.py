@@ -1,6 +1,6 @@
 """
 AnimUpgrade - Web Interface
-Gradio app: drop a video, pick a motion type, get upgraded animation back.
+Gradio app: drop a video, pick a motion type, get enhanced animation back.
 Run with: python app.py
 """
 
@@ -9,12 +9,11 @@ import sys
 import tempfile
 from pathlib import Path
 
-# Ensure pipeline is importable
 sys.path.insert(0, str(Path(__file__).parent))
 
 import gradio as gr
 
-from pipeline import run_pipeline, MOTION_PRESETS
+from pipeline import run_pipeline, MOTION_PRESETS, TIERS
 
 
 MOTION_OPTIONS = {
@@ -26,48 +25,38 @@ MOTION_OPTIONS = {
 }
 
 QUALITY_OPTIONS = {
-    "Pro 1080p (~$0.49/clip)": {"use_pro": True, "use_fast": False},
-    "Fast Pro 1080p (~$0.49/clip, quicker)": {"use_pro": True, "use_fast": True},
-    "Standard 768p (~$0.27/clip)": {"use_pro": False, "use_fast": False},
-    "Fast Standard 768p (~$0.27/clip, quicker)": {"use_pro": False, "use_fast": True},
+    "O3 Pro (best quality)": "o3_pro",
+    "O1 Pro (balanced)": "o1_pro",
+    "O1 Standard (budget)": "o1_standard",
 }
 
 
 def check_api_key():
     key = os.environ.get("FAL_KEY", "")
     if not key:
-        return False, "❌ FAL_KEY not set. Add it in the API Key field below."
-    return True, f"✅ API key set ({key[:8]}...)"
+        return False, "FAL_KEY not set. Add it in the API Key field below."
+    return True, f"API key set ({key[:8]}...)"
 
 
-def upgrade_video(
+def enhance_video(
     video_file,
     motion_label,
     quality_label,
+    cfg_scale,
     custom_prompt,
-    frame_choice,
     fal_key_input,
 ):
-    # Set API key from input if provided
     if fal_key_input and fal_key_input.strip():
         os.environ["FAL_KEY"] = fal_key_input.strip()
 
     if not os.environ.get("FAL_KEY"):
-        return None, "❌ No API key. Get one free at fal.ai/dashboard/keys and paste it above.", ""
+        return None, "No API key. Get one free at fal.ai/dashboard/keys and paste it above.", ""
 
     if video_file is None:
-        return None, "❌ Please upload a video first.", ""
+        return None, "Please upload a video first.", ""
 
     motion_type = MOTION_OPTIONS.get(motion_label, "generic")
-    quality_opts = QUALITY_OPTIONS.get(quality_label, QUALITY_OPTIONS["Pro 1080p (~$0.49/clip)"])
-
-    frame_number = None
-    if frame_choice == "First frame":
-        frame_number = 0
-    elif frame_choice == "Last frame":
-        frame_number = -1
-    # else: middle frame (default)
-
+    tier_key = QUALITY_OPTIONS.get(quality_label, "o3_pro")
     prompt = custom_prompt.strip() if custom_prompt and custom_prompt.strip() else None
 
     output_dir = tempfile.mkdtemp()
@@ -78,52 +67,44 @@ def upgrade_video(
             output_dir=output_dir,
             motion_type=motion_type,
             custom_prompt=prompt,
-            frame_number=frame_number,
-            use_pro=quality_opts["use_pro"],
-            use_fast=quality_opts["use_fast"],
+            tier_key=tier_key,
+            cfg_scale=float(cfg_scale),
         )
 
-        output_video = result["output"]
-        status = f"✅ Done! Cost: {result['cost_estimate']} | Tier: {result['tier']}"
+        status = f"Done! Tier: {result['tier']} | Cost: {result['cost_estimate']}"
         prompt_used = f"Prompt used:\n{result['prompt_used']}"
-
-        return output_video, status, prompt_used
+        return result["output"], status, prompt_used
 
     except Exception as e:
         error_msg = str(e)
         if "401" in error_msg or "unauthorized" in error_msg.lower():
-            return None, "❌ Invalid API key. Check your FAL_KEY.", ""
+            return None, "Invalid API key. Check your FAL_KEY.", ""
         elif "quota" in error_msg.lower() or "credit" in error_msg.lower():
-            return None, "❌ Insufficient credits. Add credits at fal.ai/dashboard.", ""
+            return None, "Insufficient credits. Add credits at fal.ai/dashboard.", ""
         else:
-            return None, f"❌ Error: {error_msg}", ""
+            return None, f"Error: {error_msg}", ""
 
 
 CSS = """
 body { font-family: 'Inter', sans-serif; }
-.gradio-container { max-width: 900px !important; margin: 0 auto; }
-.main-header {
-    text-align: center;
-    padding: 20px 0 10px;
-    border-bottom: 1px solid #e5e7eb;
-    margin-bottom: 20px;
-}
-.main-header h1 { font-size: 2rem; font-weight: 700; margin: 0; }
-.main-header p { color: #6b7280; margin: 6px 0 0; font-size: 0.95rem; }
+.gradio-container { max-width: 960px !important; margin: 0 auto; }
 """
 
 DESCRIPTION = """
 ## AnimUpgrade
-**Drop in a flat TV animation clip. Get back a version with real motion.**
+**Drop in a flat TV animation clip. Get back a version with real secondary motion.**
 
-Built for scenes where characters move like PNGs — flying scenes, static dialogue shots, 
-background characters sliding across frames. Powered by Hailuo 2.3 Pro.
+Uses Kling video-to-video — preserves your original scene, characters, and art style exactly.
+Adds what's missing: hair physics, cape movement, breathing, fabric dynamics.
 
-→ Get a free API key at [fal.ai/dashboard/keys](https://fal.ai/dashboard/keys)
+Cost: ~$0.17/sec of input video. A 5-second clip = ~$0.85.
+
+Get a free API key at [fal.ai/dashboard/keys](https://fal.ai/dashboard/keys)
 """
 
+
 def build_app():
-    with gr.Blocks(css=CSS, title="AnimUpgrade") as app:
+    with gr.Blocks(title="AnimUpgrade") as app:
         gr.Markdown(DESCRIPTION)
 
         with gr.Row():
@@ -133,13 +114,13 @@ def build_app():
                     label="fal.ai API Key",
                     placeholder="key-xxxxxxxxxxxxxxxx",
                     type="password",
-                    info="Get a free key at fal.ai/dashboard/keys. $1 free credit = ~2 clips.",
+                    info="Get a free key at fal.ai/dashboard/keys.",
                 )
-                key_status = gr.Markdown(check_api_key()[1])
+                gr.Markdown(check_api_key()[1])
 
                 gr.Markdown("### 2. Upload video")
                 video_input = gr.Video(
-                    label="Input clip",
+                    label="Input clip (MP4, 3-10 seconds recommended)",
                     sources=["upload"],
                 )
 
@@ -148,55 +129,58 @@ def build_app():
                     label="Scene type",
                     choices=list(MOTION_OPTIONS.keys()),
                     value="Auto-detect (generic)",
-                    info="Picks the right motion prompt for your scene type.",
+                    info="Picks the right motion prompt for your scene.",
                 )
                 quality_input = gr.Dropdown(
                     label="Quality tier",
                     choices=list(QUALITY_OPTIONS.keys()),
-                    value="Fast Pro 1080p (~$0.49/clip, quicker)",
+                    value="O3 Pro (best quality)",
                 )
-                frame_input = gr.Radio(
-                    label="Reference frame",
-                    choices=["Middle frame", "First frame", "Last frame"],
-                    value="Middle frame",
-                    info="Which frame to use as the motion reference.",
+                cfg_scale_input = gr.Slider(
+                    label="Enhancement strength",
+                    minimum=0.1,
+                    maximum=0.7,
+                    value=0.4,
+                    step=0.05,
+                    info="Lower = more faithful to original. 0.3-0.4 recommended.",
                 )
                 custom_prompt = gr.Textbox(
                     label="Custom prompt (optional)",
-                    placeholder="Describe the exact motion you want...",
+                    placeholder="Describe exactly what secondary motion to add...",
                     lines=3,
                     info="Leave blank to use the scene type preset.",
                 )
 
-                run_btn = gr.Button("Upgrade Animation →", variant="primary", size="lg")
+                run_btn = gr.Button("Enhance Animation", variant="primary", size="lg")
 
             with gr.Column(scale=1):
                 gr.Markdown("### Result")
-                video_output = gr.Video(label="Upgraded clip", interactive=False)
-                status_output = gr.Markdown("Upload a clip and click Upgrade to get started.")
+                video_output = gr.Video(label="Enhanced clip", interactive=False)
+                status_output = gr.Markdown("Upload a clip and click Enhance to get started.")
                 prompt_output = gr.Textbox(
                     label="Prompt used",
                     interactive=False,
-                    lines=4,
+                    lines=5,
                 )
 
                 gr.Markdown("""
 ---
-**Tips for best results:**
-- Use 3-8 second clips for best motion coherence
-- Flying scenes respond best to the "Flying" preset
-- For Invincible-style: keep "Auto-detect" and add `[Static shot]` to hold the camera
-- The model preserves your art style — it won't make it look photorealistic
+**Tips:**
+- 3-8 second clips work best
+- Start with strength 0.4 — go lower if too much changes
+- Flying scenes: use "Flying" preset, it targets cape and hair specifically
+- The model preserves your art style — it won't go photorealistic
+- Kling v2v enhances existing motion, it doesn't invent new scenes
                 """)
 
         run_btn.click(
-            fn=upgrade_video,
+            fn=enhance_video,
             inputs=[
                 video_input,
                 motion_input,
                 quality_input,
+                cfg_scale_input,
                 custom_prompt,
-                frame_input,
                 fal_key_input,
             ],
             outputs=[video_output, status_output, prompt_output],
@@ -207,18 +191,18 @@ def build_app():
 
 if __name__ == "__main__":
     print("\n" + "="*50)
-    print("AnimUpgrade Web App")
+    print("AnimUpgrade Web App  |  Kling video-to-video")
     print("="*50)
     has_key, key_msg = check_api_key()
     print(key_msg)
     if not has_key:
-        print("You can also paste your key in the UI.")
+        print("Paste your key in the UI to get started.")
     print("="*50 + "\n")
 
     app = build_app()
     app.launch(
         server_name="0.0.0.0",
         server_port=7860,
-        share=False,
         show_error=True,
+        css=CSS,
     )

@@ -1,13 +1,12 @@
 """
 AnimUpgrade - Core Pipeline
-Extracts key frames from a video clip, sends each to Hailuo 2.3 Pro
-via fal.ai for motion upgrade, then downloads the result.
+Enhances flat TV animation with secondary motion using Kling video-to-video.
+Preserves the original scene, characters, and art style — adds what's missing.
 """
 
 import os
 import sys
 import json
-import tempfile
 import requests
 from pathlib import Path
 from datetime import datetime
@@ -18,154 +17,122 @@ except ImportError:
     print("ERROR: fal-client not installed. Run: pip install fal-client")
     sys.exit(1)
 
-try:
-    import cv2
-except ImportError:
-    print("ERROR: opencv not installed. Run: pip install opencv-python-headless")
-    sys.exit(1)
-
-# ── Motion prompts tuned for Western TV animation ──────────────────────────
-# These are the key to getting good results without style drift.
-# Specific to Invincible-style animation — flat cel-shaded, dynamic but clean.
-
+# Prompts describe only what to ADD, not what to replace.
+# Kling v2v preserves the original scene — we're just telling it what's missing.
 MOTION_PRESETS = {
     "flying": (
-        "Cel-shaded cartoon character flying through air, flat animation style, "
-        "dynamic cape motion, secondary motion on hair and costume, atmospheric "
-        "parallax background, smooth arcing trajectory, [Static shot]"
+        "Add natural secondary motion: cape fabric rippling in wind, hair strands flowing, "
+        "subtle muscle tension, atmospheric particles, clothes have natural physics. "
+        "Preserve all existing character positions, art style, and scene composition exactly."
     ),
     "talking": (
-        "Cel-shaded cartoon character talking, subtle head bob, natural blink, "
-        "slight shoulder rise with breath, flat animation style, "
-        "minimal camera movement, [Static shot]"
+        "Add subtle life: natural blinking, slight breathing movement in chest and shoulders, "
+        "micro-expressions, hair settling naturally. "
+        "Preserve all existing character positions, art style, and scene exactly."
     ),
     "action": (
-        "Cel-shaded cartoon action scene, impact frames, smear frames, "
-        "dynamic motion blur, flat animation style, punchy movement, "
-        "secondary motion on loose elements, [Static shot]"
+        "Enhance impact: speed lines intensify, dust and debris particles, secondary motion "
+        "on loose clothing, hair and cape physics during movement. "
+        "Preserve existing animation and art style exactly."
     ),
     "walk": (
-        "Cel-shaded cartoon character walking, natural weight shift, "
-        "arm swing, subtle bounce, flat animation style, "
-        "smooth looping motion, [Static shot]"
+        "Add natural secondary motion: hair bounce with each step, fabric settling, "
+        "arm swing physics, subtle weight shift. "
+        "Preserve all existing character positions, art style, and scene exactly."
     ),
     "generic": (
-        "Cel-shaded Western cartoon animation, natural secondary motion, "
-        "flat color animation style, smooth fluid movement, "
-        "preserve original art style exactly, [Static shot]"
+        "Add subtle secondary motion throughout: natural hair physics, fabric movement, "
+        "atmospheric depth, characters breathe and blink naturally. "
+        "Preserve all existing positions, motion, and flat cartoon art style exactly."
     ),
 }
 
-
-def extract_key_frame(video_path: str, frame_number: int = None) -> str:
-    """
-    Extract a single key frame from a video as a PNG.
-    If frame_number is None, picks the middle frame.
-    Returns path to the extracted frame PNG.
-    """
-    cap = cv2.VideoCapture(video_path)
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    fps = cap.get(cv2.CAP_PROP_FPS)
-
-    if frame_number is None:
-        frame_number = total_frames // 2
-    elif frame_number < 0:
-        frame_number = max(0, total_frames + frame_number)
-
-    frame_number = max(0, min(frame_number, total_frames - 1))
-    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
-    ret, frame = cap.read()
-    cap.release()
-
-    if not ret:
-        raise ValueError(f"Could not read frame {frame_number} from {video_path}")
-
-    out_path = str(Path(tempfile.mkdtemp()) / f"frame_{frame_number}.png")
-    cv2.imwrite(out_path, frame)
-
-    duration = total_frames / fps if fps > 0 else 0
-    print(f"  Extracted frame {frame_number}/{total_frames} ({duration:.1f}s clip, {fps:.0f}fps)")
-    return out_path
+# Available Kling v2v tiers
+TIERS = {
+    "o3_pro": {
+        "endpoint": "fal-ai/kling-video/o3/pro/video-to-video/edit",
+        "label": "O3 Pro",
+        "cost": "~$0.17/sec of input",
+    },
+    "o1_pro": {
+        "endpoint": "fal-ai/kling-video/o1/pro/video-to-video/edit",
+        "label": "O1 Pro",
+        "cost": "~$0.17/sec of input",
+    },
+    "o1_standard": {
+        "endpoint": "fal-ai/kling-video/o1/standard/video-to-video/edit",
+        "label": "O1 Standard",
+        "cost": "~$0.17/sec of input",
+    },
+}
 
 
-def upload_image_to_fal(image_path: str) -> str:
-    """Upload image to fal.ai storage and return public URL."""
-    print(f"  Uploading frame to fal.ai storage...")
-    with open(image_path, "rb") as f:
-        url = fal_client.upload(f.read(), "image/png")
+def upload_video_to_fal(video_path: str) -> str:
+    """Upload video to fal.ai storage and return public URL."""
+    print("  Uploading video to fal.ai storage...")
+    with open(video_path, "rb") as f:
+        url = fal_client.upload(f.read(), "video/mp4")
     print(f"  Uploaded: {url}")
     return url
 
 
-def upgrade_frame_with_hailuo(
-    image_url: str,
+def enhance_with_kling(
+    video_url: str,
     motion_type: str = "generic",
     custom_prompt: str = None,
-    use_pro: bool = True,
-    use_fast: bool = False,
+    tier_key: str = "o3_pro",
+    cfg_scale: float = 0.4,
 ) -> dict:
     """
-    Send a frame to Hailuo 2.3 via fal.ai and get back animated video.
-    
-    Returns dict with keys: video_url, duration, cost_estimate
+    Send video to Kling video-to-video edit via fal.ai and get back enhanced video.
+
+    cfg_scale controls how strongly the prompt is applied:
+      0.2-0.4 = subtle, preserves original almost completely (what we want)
+      0.7+    = heavy changes, starts replacing things (avoid)
+
+    Returns dict with keys: video_url, tier, cost_estimate, prompt_used
     """
     prompt = custom_prompt or MOTION_PRESETS.get(motion_type, MOTION_PRESETS["generic"])
+    tier = TIERS.get(tier_key, TIERS["o3_pro"])
 
-    # Pick the right endpoint
-    if use_fast and use_pro:
-        endpoint = "fal-ai/minimax/hailuo-2.3-fast/pro/image-to-video"
-        tier = "Fast Pro (1080p)"
-        cost_est = "$0.49"
-    elif use_fast:
-        endpoint = "fal-ai/minimax/hailuo-2.3-fast/standard/image-to-video"
-        tier = "Fast Standard (768p)"
-        cost_est = "$0.27"
-    elif use_pro:
-        endpoint = "fal-ai/minimax/hailuo-2.3/pro/image-to-video"
-        tier = "Pro (1080p)"
-        cost_est = "$0.49"
-    else:
-        endpoint = "fal-ai/minimax/hailuo-2.3/standard/image-to-video"
-        tier = "Standard (768p)"
-        cost_est = "$0.27"
-
-    print(f"  Sending to Hailuo 2.3 {tier} (~{cost_est})...")
+    print(f"  Sending to Kling {tier['label']} ({tier['cost']})...")
     print(f"  Prompt: {prompt[:80]}...")
+    print(f"  cfg_scale: {cfg_scale} (lower = more preservation)")
 
     def on_queue_update(update):
-        if update.status == "IN_PROGRESS":
+        if isinstance(update, fal_client.InProgress):
             for log in getattr(update, "logs", []):
                 msg = log.get("message", "") if isinstance(log, dict) else str(log)
                 if msg:
                     print(f"  [fal] {msg}")
 
     result = fal_client.subscribe(
-        endpoint,
+        tier["endpoint"],
         arguments={
-            "image_url": image_url,
+            "video_url": video_url,
             "prompt": prompt,
-            "prompt_optimizer": True,
+            "cfg_scale": cfg_scale,
         },
         with_logs=True,
         on_queue_update=on_queue_update,
     )
 
-    video_url = result["video"]["url"]
-    print(f"  Done! Video URL: {video_url}")
+    video_url_out = result["video"]["url"]
+    print(f"  Done! Video URL: {video_url_out}")
 
     return {
-        "video_url": video_url,
-        "endpoint": endpoint,
-        "tier": tier,
-        "cost_estimate": cost_est,
+        "video_url": video_url_out,
+        "endpoint": tier["endpoint"],
+        "tier": tier["label"],
+        "cost_estimate": tier["cost"],
         "prompt_used": prompt,
     }
 
 
 def download_video(url: str, output_path: str) -> str:
     """Download video from URL to local path."""
-    print(f"  Downloading result...")
-    response = requests.get(url, stream=True, timeout=60)
+    print("  Downloading result...")
+    response = requests.get(url, stream=True, timeout=120)
     response.raise_for_status()
 
     with open(output_path, "wb") as f:
@@ -182,22 +149,20 @@ def run_pipeline(
     output_dir: str = "./outputs",
     motion_type: str = "generic",
     custom_prompt: str = None,
-    frame_number: int = None,
-    use_pro: bool = True,
-    use_fast: bool = False,
+    tier_key: str = "o3_pro",
+    cfg_scale: float = 0.4,
 ) -> dict:
     """
-    Full pipeline: video in → upgraded video out.
-    
+    Full pipeline: video in → enhanced video out.
+
     Args:
-        input_video_path: Path to input video (MP4 recommended)
-        output_dir: Where to save the upgraded video
+        input_video_path: Path to input video (MP4)
+        output_dir: Where to save the enhanced video
         motion_type: One of: flying, talking, action, walk, generic
         custom_prompt: Override the motion preset with your own prompt
-        frame_number: Which frame to use (None = middle frame)
-        use_pro: Use 1080p Pro tier (True) or 768p Standard (False)
-        use_fast: Use Fast variant (lower quality, faster/cheaper)
-    
+        tier_key: Quality tier — "o3_pro", "o1_pro", or "o1_standard"
+        cfg_scale: How strongly to apply the prompt (0.2-0.4 recommended)
+
     Returns:
         Dict with result info and paths
     """
@@ -209,50 +174,37 @@ def run_pipeline(
     output_path.mkdir(parents=True, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_filename = f"{input_path.stem}_upgraded_{timestamp}.mp4"
+    out_filename = f"{input_path.stem}_enhanced_{timestamp}.mp4"
     out_full_path = str(output_path / out_filename)
 
     print(f"\n{'='*60}")
-    print(f"AnimUpgrade Pipeline")
+    print(f"AnimUpgrade Pipeline  |  Kling video-to-video")
     print(f"{'='*60}")
     print(f"Input:  {input_video_path}")
     print(f"Output: {out_full_path}")
-    print(f"Motion: {motion_type}")
+    print(f"Motion: {motion_type}  |  Tier: {TIERS.get(tier_key, TIERS['o3_pro'])['label']}")
     print(f"{'='*60}\n")
 
-    # Step 1: Extract key frame
-    print("Step 1: Extracting key frame...")
-    frame_path = extract_key_frame(input_video_path, frame_number)
+    print("Step 1: Uploading video to fal.ai...")
+    video_url = upload_video_to_fal(input_video_path)
 
-    try:
-        # Step 2: Upload to fal.ai
-        print("\nStep 2: Uploading to fal.ai...")
-        image_url = upload_image_to_fal(frame_path)
+    print("\nStep 2: Enhancing with Kling video-to-video (~2-5 min)...")
+    result = enhance_with_kling(
+        video_url,
+        motion_type=motion_type,
+        custom_prompt=custom_prompt,
+        tier_key=tier_key,
+        cfg_scale=cfg_scale,
+    )
 
-        # Step 3: Generate upgraded video
-        print("\nStep 3: Generating upgraded animation (this takes ~2-4 min)...")
-        result = upgrade_frame_with_hailuo(
-            image_url,
-            motion_type=motion_type,
-            custom_prompt=custom_prompt,
-            use_pro=use_pro,
-            use_fast=use_fast,
-        )
-
-        # Step 4: Download result
-        print("\nStep 4: Downloading result...")
-        download_video(result["video_url"], out_full_path)
-    finally:
-        try:
-            os.remove(frame_path)
-        except Exception:
-            pass
+    print("\nStep 3: Downloading result...")
+    download_video(result["video_url"], out_full_path)
 
     print(f"\n{'='*60}")
     print(f"DONE!")
-    print(f"Original:  {input_video_path}")
-    print(f"Upgraded:  {out_full_path}")
-    print(f"Cost est:  {result['cost_estimate']}")
+    print(f"Original: {input_video_path}")
+    print(f"Enhanced: {out_full_path}")
+    print(f"Cost est: {result['cost_estimate']}")
     print(f"{'='*60}\n")
 
     return {
@@ -271,7 +223,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="AnimUpgrade: Upgrade flat TV animation using AI"
+        description="AnimUpgrade: Enhance flat TV animation with secondary motion"
     )
     parser.add_argument("input", help="Path to input video file")
     parser.add_argument("-o", "--output", default="./outputs", help="Output directory")
@@ -282,9 +234,18 @@ if __name__ == "__main__":
         help="Motion type preset",
     )
     parser.add_argument("-p", "--prompt", help="Custom motion prompt (overrides preset)")
-    parser.add_argument("-f", "--frame", type=int, help="Frame number to use (default: middle)")
-    parser.add_argument("--standard", action="store_true", help="Use 768p Standard instead of 1080p Pro")
-    parser.add_argument("--fast", action="store_true", help="Use Fast variant (cheaper, faster)")
+    parser.add_argument(
+        "-t", "--tier",
+        default="o3_pro",
+        choices=list(TIERS.keys()),
+        help="Quality tier: o3_pro (best), o1_pro, o1_standard (budget)",
+    )
+    parser.add_argument(
+        "--cfg-scale",
+        type=float,
+        default=0.4,
+        help="Prompt strength 0.0-1.0 (default 0.4 — low preserves original)",
+    )
 
     args = parser.parse_args()
 
@@ -299,9 +260,9 @@ if __name__ == "__main__":
         output_dir=args.output,
         motion_type=args.motion,
         custom_prompt=args.prompt,
-        frame_number=args.frame,
-        use_pro=not args.standard,
-        use_fast=args.fast,
+        tier_key=args.tier,
+        cfg_scale=args.cfg_scale,
+
     )
 
     print(json.dumps(result, indent=2))
