@@ -7,11 +7,8 @@ via fal.ai for motion upgrade, then downloads the result.
 import os
 import sys
 import json
-import base64
-import shutil
 import tempfile
 import requests
-import subprocess
 from pathlib import Path
 from datetime import datetime
 
@@ -72,6 +69,8 @@ def extract_key_frame(video_path: str, frame_number: int = None) -> str:
 
     if frame_number is None:
         frame_number = total_frames // 2
+    elif frame_number < 0:
+        frame_number = max(0, total_frames + frame_number)
 
     frame_number = max(0, min(frame_number, total_frames - 1))
     cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
@@ -81,23 +80,12 @@ def extract_key_frame(video_path: str, frame_number: int = None) -> str:
     if not ret:
         raise ValueError(f"Could not read frame {frame_number} from {video_path}")
 
-    out_path = video_path.replace(".mp4", f"_frame_{frame_number}.png")
     out_path = str(Path(tempfile.mkdtemp()) / f"frame_{frame_number}.png")
     cv2.imwrite(out_path, frame)
 
     duration = total_frames / fps if fps > 0 else 0
     print(f"  Extracted frame {frame_number}/{total_frames} ({duration:.1f}s clip, {fps:.0f}fps)")
     return out_path
-
-
-def image_to_base64_url(image_path: str) -> str:
-    """Convert image file to base64 data URL for fal.ai upload."""
-    with open(image_path, "rb") as f:
-        data = base64.b64encode(f.read()).decode("utf-8")
-    ext = Path(image_path).suffix.lower().lstrip(".")
-    if ext == "jpg":
-        ext = "jpeg"
-    return f"data:image/{ext};base64,{data}"
 
 
 def upload_image_to_fal(image_path: str) -> str:
@@ -236,29 +224,29 @@ def run_pipeline(
     print("Step 1: Extracting key frame...")
     frame_path = extract_key_frame(input_video_path, frame_number)
 
-    # Step 2: Upload to fal.ai
-    print("\nStep 2: Uploading to fal.ai...")
-    image_url = upload_image_to_fal(frame_path)
-
-    # Step 3: Generate upgraded video
-    print("\nStep 3: Generating upgraded animation (this takes ~2-4 min)...")
-    result = upgrade_frame_with_hailuo(
-        image_url,
-        motion_type=motion_type,
-        custom_prompt=custom_prompt,
-        use_pro=use_pro,
-        use_fast=use_fast,
-    )
-
-    # Step 4: Download result
-    print("\nStep 4: Downloading result...")
-    download_video(result["video_url"], out_full_path)
-
-    # Cleanup temp frame
     try:
-        os.remove(frame_path)
-    except Exception:
-        pass
+        # Step 2: Upload to fal.ai
+        print("\nStep 2: Uploading to fal.ai...")
+        image_url = upload_image_to_fal(frame_path)
+
+        # Step 3: Generate upgraded video
+        print("\nStep 3: Generating upgraded animation (this takes ~2-4 min)...")
+        result = upgrade_frame_with_hailuo(
+            image_url,
+            motion_type=motion_type,
+            custom_prompt=custom_prompt,
+            use_pro=use_pro,
+            use_fast=use_fast,
+        )
+
+        # Step 4: Download result
+        print("\nStep 4: Downloading result...")
+        download_video(result["video_url"], out_full_path)
+    finally:
+        try:
+            os.remove(frame_path)
+        except Exception:
+            pass
 
     print(f"\n{'='*60}")
     print(f"DONE!")

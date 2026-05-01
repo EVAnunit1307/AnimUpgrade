@@ -7,18 +7,12 @@ Run with: python app.py
 import os
 import sys
 import tempfile
-import shutil
 from pathlib import Path
 
 # Ensure pipeline is importable
 sys.path.insert(0, str(Path(__file__).parent))
 
-try:
-    import gradio as gr
-except ImportError:
-    print("Installing gradio...")
-    os.system("pip install gradio --break-system-packages -q")
-    import gradio as gr
+import gradio as gr
 
 from pipeline import run_pipeline, MOTION_PRESETS
 
@@ -35,6 +29,7 @@ QUALITY_OPTIONS = {
     "Pro 1080p (~$0.49/clip)": {"use_pro": True, "use_fast": False},
     "Fast Pro 1080p (~$0.49/clip, quicker)": {"use_pro": True, "use_fast": True},
     "Standard 768p (~$0.27/clip)": {"use_pro": False, "use_fast": False},
+    "Fast Standard 768p (~$0.27/clip, quicker)": {"use_pro": False, "use_fast": True},
 }
 
 
@@ -107,15 +102,14 @@ def upgrade_video(
 CSS = """
 body { font-family: 'Inter', sans-serif; }
 .gradio-container { max-width: 900px !important; margin: 0 auto; }
-.main-header { 
-    text-align: center; 
+.main-header {
+    text-align: center;
     padding: 20px 0 10px;
     border-bottom: 1px solid #e5e7eb;
     margin-bottom: 20px;
 }
 .main-header h1 { font-size: 2rem; font-weight: 700; margin: 0; }
 .main-header p { color: #6b7280; margin: 6px 0 0; font-size: 0.95rem; }
-.status-box { padding: 12px; border-radius: 8px; font-weight: 500; }
 """
 
 DESCRIPTION = """
