@@ -1,4 +1,14 @@
-fal-client>=0.10.0
-opencv-python-headless>=4.8.0
-requests>=2.31.0
-gradio>=4.0.0
+# Python dependencies for AnimUpgrade (Stage 1 + Stage 2 + Web UI)
+# Install with: pip install -r requirements.txt
+#
+# External binaries required (NOT pip packages — see README):
+#   ffmpeg / ffprobe   https://ffmpeg.org/download.html
+#   rife-ncnn-vulkan   https://github.com/nihui/rife-ncnn-vulkan/releases
+#
+# Optional GPU acceleration for dedup:
+#   pip install cupy-cuda12x   (adjust cuda version to match your driver)
+
+numpy>=1.24.0
+opencv-python>=4.8.0
+tqdm>=4.65.0
+gradio>=6.0.0
